@@ -2,31 +2,32 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
+import os
+import warnings
 from typing import List
 
-import numpy as np
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+warnings.filterwarnings("ignore")
+
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 
 from app.config import settings
 
 
-@st.cache_resource(show_spinner="Loading embedding model…")
+@st.cache_resource(show_spinner="Yükleniyor...")
 def load_model() -> SentenceTransformer:
-    """Load and cache the SentenceTransformer model (Streamlit resource cache)."""
-    return SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
+    """Load and cache the SentenceTransformer model."""
+    model_name = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
+    return SentenceTransformer(model_name)
 
 
 def embed_query(text: str) -> List[float]:
-    """Encode a single query string with L2-normalisation.
-
-    Returns a plain Python list suitable for JSON serialisation.
-    """
+    """Encode a single query string with L2-normalisation."""
     model = load_model()
     vector = model.encode(
         text,
-        normalize_embeddings=True,   # must match offline pipeline
+        normalize_embeddings=True,
         show_progress_bar=False,
     )
     return vector.tolist()
