@@ -5,3 +5,5 @@ psycopg2-binary>=2.9.0
 python-dotenv>=1.0.0
 numpy>=1.24.0
 google-generativeai>=0.4.0
+torch>=2.0.0
+torchvision>=0.15.0
