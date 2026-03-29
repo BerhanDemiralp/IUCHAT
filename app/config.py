@@ -17,7 +17,7 @@ class Settings:
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 
     # Embedding model
-    EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
+    EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-m3")
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1024"))
 
     # Retrieval

@@ -18,8 +18,7 @@ from app.config import settings
 @st.cache_resource(show_spinner="Yükleniyor...")
 def load_model() -> SentenceTransformer:
     """Load and cache the SentenceTransformer model."""
-    model_name = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
-    return SentenceTransformer(model_name)
+    return SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
 
 
 def embed_query(text: str) -> List[float]:
