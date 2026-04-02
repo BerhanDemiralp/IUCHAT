@@ -21,7 +21,7 @@ class Settings:
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1024"))
 
     # Retrieval
-    DEFAULT_TOP_K: int = int(os.getenv("DEFAULT_TOP_K", 10"))
+    DEFAULT_TOP_K: int = int(os.getenv("DEFAULT_TOP_K", "10"))
 
     # RPC function name in Supabase
     RPC_FUNCTION: str = "match_chunks"
