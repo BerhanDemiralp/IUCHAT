@@ -21,14 +21,14 @@ class Settings:
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1024"))
 
     # Retrieval
-    DEFAULT_TOP_K: int = int(os.getenv("DEFAULT_TOP_K", "5"))
+    DEFAULT_TOP_K: int = int(os.getenv("DEFAULT_TOP_K", 10"))
 
     # RPC function name in Supabase
     RPC_FUNCTION: str = "match_chunks"
 
     # Gemini LLM
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 
 settings = Settings()
