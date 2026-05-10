@@ -81,7 +81,7 @@ python upload_to_supabase.py
 ### 5. Uygulamayı Çalıştır
 
 ```bash
-streamlit run app/main.py
+streamlit run main.py
 ```
 
 Uygulama `http://localhost:8501` adresinde açılır.

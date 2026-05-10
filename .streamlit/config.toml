@@ -3,3 +3,7 @@ headless = true
 
 [runner]
 magicEnabled = true
+
+[client]
+showErrorDetails = "none"
+toolbarMode = "minimal"

@@ -2,11 +2,50 @@
 
 from __future__ import annotations
 
+import time
 from typing import List
+
+import httpx
 
 from app.config import settings
 from app.models import ChunkResult, SearchResult
 from app.services.supabase_client import get_supabase_client
+
+_TRANSIENT_HTTPX_ERRORS: tuple[type[BaseException], ...] = (
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+)
+
+_MAX_ATTEMPTS = 3
+_BACKOFF_SECONDS = 0.4
+
+
+def _execute_rpc_with_retry(query_embedding: List[float], top_k: int):
+    """Run the RPC call with retry + cached-client reset on transient errors."""
+    last_error: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        client = get_supabase_client()
+        try:
+            return client.rpc(
+                settings.RPC_FUNCTION,
+                {
+                    "query_embedding": query_embedding,
+                    "match_count": top_k,
+                },
+            ).execute()
+        except _TRANSIENT_HTTPX_ERRORS as exc:
+            last_error = exc
+            get_supabase_client.cache_clear()
+            if attempt == _MAX_ATTEMPTS - 1:
+                break
+            time.sleep(_BACKOFF_SECONDS * (attempt + 1))
+
+    assert last_error is not None
+    raise last_error
 
 
 def retrieve(
@@ -28,15 +67,7 @@ def retrieve(
     if top_k is None:
         top_k = settings.DEFAULT_TOP_K
 
-    client = get_supabase_client()
-
-    response = client.rpc(
-        settings.RPC_FUNCTION,
-        {
-            "query_embedding": query_embedding,
-            "match_count": top_k,
-        },
-    ).execute()
+    response = _execute_rpc_with_retry(query_embedding, top_k)
 
     rows = response.data or []
 
