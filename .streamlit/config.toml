@@ -7,3 +7,11 @@ magicEnabled = true
 [client]
 showErrorDetails = "none"
 toolbarMode = "minimal"
+
+[theme]
+base = "light"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F6F8FB"
+textColor = "#14213D"
+primaryColor = "#D6A62A"
+font = "sans serif"

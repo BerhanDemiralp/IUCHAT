@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import re
+from typing import Iterator, Sequence
+
 import streamlit as st
 import google.generativeai as genai
 
 from app.config import settings
 from app.models import ChunkResult
+
+# How many of the most recent user/assistant turns are passed to the LLM as
+# conversational context. Each "turn" = one user message + the following
+# assistant message, so MAX_HISTORY_TURNS=3 means up to 6 messages.
+MAX_HISTORY_TURNS = 3
 
 
 @st.cache_resource(show_spinner="Connecting to Gemini…")
@@ -27,11 +35,64 @@ def build_context(chunks: list[ChunkResult]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def generate_answer(query: str, context: str) -> str:
-    """Send query + context to Gemini and return the answer."""
-    model = _get_model()
+_SOURCE_CHIP_RE = re.compile(r"<a[^>]*class=['\"]source-chip['\"][^>]*>.*?</a>", re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
-    prompt = f"""# ROL
+
+def _clean_assistant_content(content: str) -> str:
+    """Strip source-chip HTML so the LLM only sees the natural answer text."""
+    if not content:
+        return ""
+    cleaned = _SOURCE_CHIP_RE.sub("", content)
+    cleaned = _HTML_TAG_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _format_history(history: Sequence[dict] | None) -> str:
+    """Format recent chat history as a compact transcript for the prompt.
+
+    Skips welcome / loading / error sentinel messages. Caps to the last
+    ``MAX_HISTORY_TURNS`` user+assistant pairs.
+    """
+    if not history:
+        return ""
+
+    pairs: list[tuple[str, str]] = []
+    pending_user: str | None = None
+
+    for msg in history:
+        role = msg.get("role")
+        content = (msg.get("content") or "").strip()
+        if not content or msg.get("is_loading"):
+            continue
+        if role == "user":
+            pending_user = content
+        elif role == "assistant" and pending_user is not None:
+            pairs.append((pending_user, _clean_assistant_content(content)))
+            pending_user = None
+
+    if not pairs:
+        return ""
+
+    pairs = pairs[-MAX_HISTORY_TURNS:]
+    lines: list[str] = []
+    for user_msg, asst_msg in pairs:
+        lines.append(f"Kullanıcı: {user_msg}")
+        if asst_msg:
+            lines.append(f"Asistan: {asst_msg}")
+    return "\n".join(lines)
+
+
+def _build_prompt(query: str, context: str, history_text: str = "") -> str:
+    """Compose the full prompt sent to Gemini."""
+    history_block = (
+        f"\n# ÖNCEKİ KONUŞMA (bağlam için)\n"
+        f"{history_text}\n\n"
+        f"Yeni soruyu yorumlarken yukarıdaki bağlamı kullan. \"Ona\", \"onun\", \"peki\","
+        f" \"bu konuda\" gibi referansları önceki konu üzerinden çöz.\n"
+    ) if history_text else ""
+
+    return f"""{history_block}# ROL
 Sen "İÜC Asistan"sın — İstanbul Üniversitesi-Cerrahpaşa'nın resmi belgelerine dayanan
 bir yapay zeka asistanısın. Hedef kitlen aday öğrenciler, kayıtlı öğrenciler, mezunlar
 ve akademik/idari personeldir.
@@ -91,5 +152,37 @@ fakülte/bölüm bilgileri, idari prosedürler, başvuru formları vb.) dayanara
 # YANIT
 """
 
+
+def generate_answer(
+    query: str,
+    context: str,
+    chat_history: Sequence[dict] | None = None,
+) -> str:
+    """Send query + context (+ recent history) to Gemini and return the full answer."""
+    model = _get_model()
+    prompt = _build_prompt(query, context, _format_history(chat_history))
     response = model.generate_content(prompt)
     return response.text
+
+
+def generate_answer_stream(
+    query: str,
+    context: str,
+    chat_history: Sequence[dict] | None = None,
+) -> Iterator[str]:
+    """Stream Gemini's answer token by token.
+
+    Yields incremental text chunks suitable for ``st.write_stream``. Empty
+    chunks are filtered. Callers can ``"".join(...)`` the iterator to obtain
+    the full final text.
+    """
+    model = _get_model()
+    prompt = _build_prompt(query, context, _format_history(chat_history))
+    response = model.generate_content(prompt, stream=True)
+    for chunk in response:
+        try:
+            text = chunk.text
+        except (AttributeError, ValueError):
+            text = ""
+        if text:
+            yield text

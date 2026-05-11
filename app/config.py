@@ -21,10 +21,12 @@ class Settings:
     EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "1024"))
 
     # Retrieval
-    DEFAULT_TOP_K: int = int(os.getenv("DEFAULT_TOP_K", "10"))
+    DEFAULT_TOP_K: int = int(os.getenv("DEFAULT_TOP_K", "8"))
 
-    # RPC function name in Supabase
-    RPC_FUNCTION: str = "match_chunks"
+    # RPC function name in Supabase. The hybrid RPC merges vector and FTS
+    # via Reciprocal Rank Fusion; falls back automatically to "match_chunks"
+    # when the hybrid function is not deployed.
+    RPC_FUNCTION: str = "match_chunks_hybrid"
 
     # Gemini LLM
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

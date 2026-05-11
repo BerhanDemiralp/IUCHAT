@@ -41,6 +41,7 @@ ERROR_MESSAGE = (
 )
 
 from app.ui.components import (
+    AGENT_AVATAR_URL,
     format_sources_markdown,
     inject_sidebar_silhouette,
     inject_styles,
@@ -54,7 +55,8 @@ from app.ui.components import (
 )
 from app.services.embedder import embed_query
 from app.services.retriever import retrieve
-from app.services.llm import build_context, generate_answer
+from app.services.llm import build_context, generate_answer_stream
+from app.services.query_enrichment import enrich_query
 
 
 @st.cache_resource(show_spinner="Loading embedding model...")
@@ -107,17 +109,36 @@ def _reset_chat() -> None:
     st.session_state.is_generating = False
 
 
-def _run_rag(query: str, top_k: int) -> tuple[str, list[dict[str, str | float | int | None]]]:
-    """Execute embedding, retrieval, and answer generation."""
-    embedding = embed_query(query)
-    result = retrieve(query=query, query_embedding=embedding, top_k=top_k)
+def _retrieve_context(query: str, top_k: int):
+    """Embed + hybrid-retrieve. Returns (context_str, sources_list)."""
+    import time as _time
+
+    enriched = enrich_query(query)
+
+    t0 = _time.perf_counter()
+    embedding = embed_query(enriched.embed_text)
+    t_embed_ms = (_time.perf_counter() - t0) * 1000
+
+    t1 = _time.perf_counter()
+    result = retrieve(
+        query=query,
+        query_embedding=embedding,
+        top_k=top_k,
+        fts_query=enriched.fts_text,
+    )
+    t_retrieve_ms = (_time.perf_counter() - t1) * 1000
+
+    logger.info(
+        "Retrieval: embed=%.0fms, supabase=%.0fms, hits=%d, query=%r",
+        t_embed_ms,
+        t_retrieve_ms,
+        len(result.results),
+        query[:80],
+    )
 
     if not result.results:
-        return "Bu konuda kaynaklarda bilgi bulunamadı.", []
-
+        return None, []
     context = build_context(result.results)
-    answer = generate_answer(query, context)
-
     sources = [
         {
             "file_name": chunk.file_name,
@@ -126,7 +147,85 @@ def _run_rag(query: str, top_k: int) -> tuple[str, list[dict[str, str | float | 
         }
         for chunk in result.results
     ]
-    return answer, sources
+    return context, sources
+
+
+def _stream_assistant_response(prompt_to_answer: str, top_k: int) -> str:
+    """Render a live streaming assistant bubble.
+
+    Returns the final assistant message (answer + sources HTML) that should
+    be appended to the chat history.
+    """
+    from app.ui.components import _TYPING_INDICATOR_HTML  # local to avoid cycles
+
+    left, _right = st.columns([9.5, 2.5], gap="small")
+    with left:
+        st.markdown("<div class='assistant-wrap'>", unsafe_allow_html=True)
+        with st.chat_message("assistant", avatar=AGENT_AVATAR_URL):
+            status_slot = st.empty()
+            status_slot.markdown(_TYPING_INDICATOR_HTML, unsafe_allow_html=True)
+
+            try:
+                context, sources = _retrieve_context(prompt_to_answer, top_k)
+            except Exception:
+                logger.exception(
+                    "Retrieval hatası: query=%r", prompt_to_answer
+                )
+                status_slot.markdown(ERROR_MESSAGE)
+                st.markdown("</div>", unsafe_allow_html=True)
+                return ERROR_MESSAGE
+
+            if context is None:
+                msg = "Bu konuda elimdeki belgelerde bilgi bulunamadı."
+                status_slot.markdown(msg)
+                st.markdown("</div>", unsafe_allow_html=True)
+                return msg
+
+            try:
+                # Pass last few turns (excluding the just-pushed user message)
+                # so the LLM can resolve references like "ona", "peki", "onun"
+                # to the previous topic.
+                history_for_llm = [
+                    m for m in st.session_state.messages[:-1]
+                    if not m.get("is_loading") and m.get("content")
+                ]
+                stream_iter = generate_answer_stream(
+                    prompt_to_answer, context, chat_history=history_for_llm
+                )
+
+                # Keep the typing indicator visible until the FIRST token
+                # actually arrives from the LLM — otherwise the assistant
+                # bubble appears empty during the model's "time-to-first-token"
+                # (~500ms-1s of round-trip latency).
+                def _stream_with_indicator_swap():
+                    first = True
+                    for chunk in stream_iter:
+                        if first:
+                            status_slot.empty()
+                            first = False
+                        yield chunk
+                    if first:
+                        # No chunks at all — clear the indicator anyway
+                        status_slot.empty()
+
+                answer_text = st.write_stream(_stream_with_indicator_swap())
+            except Exception:
+                logger.exception(
+                    "LLM streaming hatası: query=%r", prompt_to_answer
+                )
+                status_slot.markdown(ERROR_MESSAGE)
+                st.markdown("</div>", unsafe_allow_html=True)
+                return ERROR_MESSAGE
+
+            if not isinstance(answer_text, str):
+                answer_text = "".join(answer_text) if answer_text else ""
+
+            sources_html = format_sources_markdown(sources)
+            if sources_html:
+                st.markdown(sources_html, unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    return f"{answer_text}\n{sources_html}" if sources_html else answer_text
 
 
 def main() -> None:
@@ -137,7 +236,7 @@ def main() -> None:
 
     render_topbar()
     render_chat_header()
-    top_k = 10
+    top_k = settings_top_k()
 
     chip_question = render_suggestion_chips()
     if chip_question:
@@ -147,29 +246,16 @@ def main() -> None:
 
     if st.session_state.is_generating and st.session_state.pending_prompt:
         prompt_to_answer = st.session_state.pending_prompt
-        try:
-            answer, sources = _run_rag(prompt_to_answer, top_k)
-            answer_with_sources = f"{answer}\n{format_sources_markdown(sources)}"
-        except Exception:
-            logger.exception(
-                "RAG akışı sırasında beklenmeyen hata: query=%r", prompt_to_answer
-            )
-            answer_with_sources = ERROR_MESSAGE
-
-        if (
-            st.session_state.messages
-            and st.session_state.messages[-1].get("is_loading")
-        ):
-            st.session_state.messages[-1] = {
-                "role": "assistant",
-                "content": answer_with_sources,
-            }
-        else:
-            st.session_state.messages.append(
-                {"role": "assistant", "content": answer_with_sources}
-            )
+        final_message = _stream_assistant_response(prompt_to_answer, top_k)
+        st.session_state.messages.append(
+            {"role": "assistant", "content": final_message}
+        )
         st.session_state.pending_prompt = None
         st.session_state.is_generating = False
+        # Force a clean rerun so the live streaming bubble is replaced by the
+        # history-rendered version. Without this, Streamlit can keep the live
+        # bubble in the DOM, producing a visual duplicate next to the
+        # history-rendered message on the following rerun.
         st.rerun()
 
     user_input = render_chat_input(disabled=st.session_state.is_generating)
@@ -184,12 +270,15 @@ def main() -> None:
         return
 
     st.session_state.messages.append({"role": "user", "content": prompt})
-    st.session_state.messages.append(
-        {"role": "assistant", "content": "", "is_loading": True}
-    )
     st.session_state.pending_prompt = prompt
     st.session_state.is_generating = True
     st.rerun()
+
+
+def settings_top_k() -> int:
+    """Resolve top_k from settings module (single source of truth)."""
+    from app.config import settings
+    return settings.DEFAULT_TOP_K
 
 
 if __name__ == "__main__":
